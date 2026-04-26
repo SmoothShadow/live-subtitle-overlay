@@ -8,6 +8,10 @@ from .config import WhisperConfig
 from .models import AudioChunk, TranscriptSegment
 
 
+class RecognizerInitializationError(RuntimeError):
+    """Raised when the speech recognizer cannot be initialized."""
+
+
 class SpeechRecognizer(ABC):
     @abstractmethod
     def transcribe(self, chunk: AudioChunk) -> list[TranscriptSegment]:
@@ -41,14 +45,27 @@ class FasterWhisperRecognizer(SpeechRecognizer):
 
     def _ensure_model(self):
         if self._model is None:
-            from faster_whisper import WhisperModel
+            try:
+                from faster_whisper import WhisperModel
+            except ModuleNotFoundError as exc:
+                raise RecognizerInitializationError(
+                    "faster-whisper is not installed. Install project dependencies before starting the real pipeline."
+                ) from exc
 
-            self._model = WhisperModel(
-                self._config.model_name,
-                device=self._config.device,
-                compute_type=self._config.compute_type,
-            )
+            try:
+                self._model = WhisperModel(
+                    self._config.model_name,
+                    device=self._config.device,
+                    compute_type=self._config.compute_type,
+                )
+            except Exception as exc:
+                raise RecognizerInitializationError(
+                    f"Unable to load Whisper model '{self._config.model_name}' on device '{self._config.device}': {exc}"
+                ) from exc
         return self._model
+
+    def ensure_ready(self) -> None:
+        self._ensure_model()
 
     @staticmethod
     def _pcm16_to_float32_mono(chunk: AudioChunk):

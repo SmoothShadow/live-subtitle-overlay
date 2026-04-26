@@ -5,6 +5,9 @@ from pathlib import Path
 import os
 
 
+_PLACEHOLDER_SECRET_VALUES = {"replace-me", "changeme", "your-key-here", "placeholder"}
+
+
 def _read_dotenv(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     if not path.exists():
@@ -46,7 +49,8 @@ class AzureTranslatorConfig:
 
     @property
     def is_enabled(self) -> bool:
-        return bool(self.key and self.endpoint)
+        normalized = self.key.strip().lower()
+        return bool(self.endpoint.strip()) and bool(normalized) and normalized not in _PLACEHOLDER_SECRET_VALUES
 
 
 @dataclass(slots=True)
@@ -62,6 +66,10 @@ class AudioConfig:
     chunk_seconds: float
     frames_per_buffer: int
     sample_rate_hint: int
+    loopback_device_index: int | None
+    enable_vad: bool
+    vad_aggressiveness: int
+    silence_rms_threshold: float
 
 
 @dataclass(slots=True)
@@ -70,6 +78,7 @@ class UiConfig:
     opacity: float
     width: int
     height: int
+    subtitle_timeout_seconds: float
     show_source_text: bool
 
 
@@ -105,12 +114,21 @@ class AppConfig:
                 chunk_seconds=_get_float("CHUNK_SECONDS", dotenv, 2.0),
                 frames_per_buffer=_get_int("FRAMES_PER_BUFFER", dotenv, 1024),
                 sample_rate_hint=_get_int("SAMPLE_RATE_HINT", dotenv, 48000),
+                loopback_device_index=(
+                    int(_get_env("WASAPI_LOOPBACK_DEVICE_INDEX", dotenv))
+                    if _get_env("WASAPI_LOOPBACK_DEVICE_INDEX", dotenv)
+                    else None
+                ),
+                enable_vad=_get_bool("ENABLE_VAD", dotenv, True),
+                vad_aggressiveness=_get_int("VAD_AGGRESSIVENESS", dotenv, 2),
+                silence_rms_threshold=_get_float("SILENCE_RMS_THRESHOLD", dotenv, 0.009),
             ),
             ui=UiConfig(
                 font_size=_get_int("OVERLAY_FONT_SIZE", dotenv, 30),
                 opacity=_get_float("OVERLAY_OPACITY", dotenv, 0.86),
                 width=_get_int("OVERLAY_WIDTH", dotenv, 960),
                 height=_get_int("OVERLAY_HEIGHT", dotenv, 180),
+                subtitle_timeout_seconds=_get_float("SUBTITLE_TIMEOUT_SECONDS", dotenv, 4.5),
                 show_source_text=_get_bool("SHOW_SOURCE_TEXT", dotenv, False),
             ),
         )

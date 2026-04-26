@@ -5,9 +5,14 @@ from collections.abc import Iterator
 import queue
 import threading
 import time
+from typing import Any
 
 from .config import AudioConfig
 from .models import AudioChunk
+
+
+class AudioSourceInitializationError(RuntimeError):
+    """Raised when the loopback audio source cannot be initialized."""
 
 
 class AudioSource(ABC):
@@ -59,7 +64,28 @@ class PyAudioLoopbackSource(AudioSource):
         self._bytes_per_second = 0
         self._current_chunk_start = 0.0
 
+    @staticmethod
+    def _load_pyaudio():
+        try:
+            import pyaudiowpatch as pyaudio
+        except ModuleNotFoundError as exc:
+            raise AudioSourceInitializationError(
+                "PyAudioWPatch is not installed. Install dependencies on Windows to enable WASAPI loopback capture."
+            ) from exc
+        return pyaudio
+
     def _resolve_loopback_device(self, pyaudio_module, manager):
+        if self._config.loopback_device_index is not None:
+            selected = manager.get_device_info_by_index(self._config.loopback_device_index)
+            if selected.get("isLoopbackDevice"):
+                return selected
+            for loopback in manager.get_loopback_device_info_generator():
+                if int(loopback["index"]) == int(selected["index"]):
+                    return loopback
+            raise RuntimeError(
+                f"Configured device index {self._config.loopback_device_index} is not a WASAPI loopback device."
+            )
+
         wasapi_info = manager.get_host_api_info_by_type(pyaudio_module.paWASAPI)
         default_speakers = manager.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
         if default_speakers.get("isLoopbackDevice"):
@@ -72,12 +98,23 @@ class PyAudioLoopbackSource(AudioSource):
             "Default WASAPI loopback device not found. Run `python -m pyaudiowpatch` on Windows to inspect devices."
         )
 
-    def start(self) -> None:
-        import pyaudiowpatch as pyaudio
+    def resolve_device(self):
+        pyaudio = self._load_pyaudio()
+        manager = pyaudio.PyAudio()
+        try:
+            return self._resolve_loopback_device(pyaudio, manager)
+        finally:
+            manager.terminate()
 
+    def start(self) -> None:
+        pyaudio = self._load_pyaudio()
         self._pyaudio = pyaudio
         manager = pyaudio.PyAudio()
-        self._device_info = self._resolve_loopback_device(pyaudio, manager)
+        try:
+            self._device_info = self._resolve_loopback_device(pyaudio, manager)
+        except Exception:
+            manager.terminate()
+            raise
         self._current_chunk_start = time.time()
         channels = int(self._device_info["maxInputChannels"])
         sample_rate = int(self._device_info["defaultSampleRate"])
@@ -138,3 +175,26 @@ class PyAudioLoopbackSource(AudioSource):
                 yield self._queue.get(timeout=0.2)
             except queue.Empty:
                 continue
+
+
+def list_loopback_devices() -> list[dict[str, Any]]:
+    pyaudio = PyAudioLoopbackSource._load_pyaudio()
+    manager = pyaudio.PyAudio()
+    devices: list[dict[str, Any]] = []
+    try:
+        wasapi_info = manager.get_host_api_info_by_type(pyaudio.paWASAPI)
+        default_output_index = int(wasapi_info["defaultOutputDevice"])
+        default_output = manager.get_device_info_by_index(default_output_index)
+        for loopback in manager.get_loopback_device_info_generator():
+            devices.append(
+                {
+                    "index": int(loopback["index"]),
+                    "name": str(loopback["name"]),
+                    "channels": int(loopback["maxInputChannels"]),
+                    "sample_rate": int(loopback["defaultSampleRate"]),
+                    "is_default_output": default_output["name"] in loopback["name"],
+                }
+            )
+    finally:
+        manager.terminate()
+    return devices
